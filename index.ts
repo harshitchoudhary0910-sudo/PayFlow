@@ -1,12 +1,15 @@
 import express from "express";
 import router from "./src/routes/index.ts";
-import { connectToDatabase } from "./src/config/db.ts";
-import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
+import cookieParser from "cookie-parser";
+
 import cors from "cors";
+dotenv.config();
+import { connectToDatabase } from "./src/config/db.ts";
+
+
 import { recoverPendingTransactions } from "./src/jobs/transactionRecovery.ts";
 
-dotenv.config();
 const app=express();
 
 
