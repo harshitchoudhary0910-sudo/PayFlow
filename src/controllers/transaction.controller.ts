@@ -4,13 +4,17 @@ import type { CreateTransactionInput } from "../schemas/transaction.Schema.ts";
 import transactionModel from "../models/TransactionModel.ts";
 import ledgerModel from "../models/LedgerModel.ts";
 import mongoose from "mongoose";
+import type { TransactionDocument } from "../models/TransactionModel.ts";
+
+
 export async function createTransactionController(
     req: Request,
     res: Response
 ) {
 
     const session = await mongoose.startSession();
-    let transaction = null;
+
+    let transaction: TransactionDocument | null = null;
 
     try {
 
@@ -36,7 +40,6 @@ export async function createTransactionController(
         }
 
 
-
         const toAccount = await AccountModel.findOne({
             accountNumber: toAccountNumber
         });
@@ -48,12 +51,12 @@ export async function createTransactionController(
         }
 
 
-
         if (fromAccount._id.equals(toAccount._id)) {
             return res.status(400).json({
                 message: "Cannot transfer to yourself"
             });
         }
+
 
         if (
             fromAccount.status !== "active" ||
@@ -63,7 +66,6 @@ export async function createTransactionController(
                 message: "Inactive account"
             });
         }
-
 
 
         try {
@@ -77,9 +79,9 @@ export async function createTransactionController(
             });
 
         }
-        catch(err:any){
+        catch (err: any) {
 
-            if(err.code===11000){
+            if (err.code === 11000) {
 
                 const existing =
                     await transactionModel.findOne({
@@ -95,26 +97,63 @@ export async function createTransactionController(
         }
 
 
+        // TypeScript now knows this cannot be null
+        if (!transaction) {
+            throw new Error("Transaction creation failed");
+        }
 
-        session.startTransaction();
+        // Use this inside the callback.
+        // It is permanently known to be a TransactionDocument.
+        const createdTransaction = transaction;
 
-  
 
-        const debitResult =
+        await session.withTransaction(async () => {
+
+
+            // 1. Atomically debit sender
+
+            const debitResult =
+                await AccountModel.updateOne(
+
+                    {
+                        _id: fromAccount._id,
+
+                        balance: {
+                            $gte: amount
+                        }
+                    },
+
+                    {
+                        $inc: {
+                            balance: -amount
+                        }
+                    },
+
+                    {
+                        session
+                    }
+
+                );
+
+
+            if (debitResult.modifiedCount === 0) {
+
+                throw new Error("Insufficient balance");
+
+            }
+
+
+            // 2. Credit receiver
+
             await AccountModel.updateOne(
 
                 {
-                    _id: fromAccount._id,
-
-                    balance:{
-                        $gte:amount
-                    }
-
+                    _id: toAccount._id
                 },
 
                 {
-                    $inc:{
-                        balance:-amount
+                    $inc: {
+                        balance: amount
                     }
                 },
 
@@ -124,92 +163,81 @@ export async function createTransactionController(
 
             );
 
-        if(debitResult.modifiedCount===0){
 
-            throw new Error("Insufficient balance");
-        }
+            // 3. Create DEBIT ledger entry
 
+            await ledgerModel.create([{
 
-        await AccountModel.updateOne(
+                account: fromAccount._id,
+                amount,
+                transaction: createdTransaction._id,
+                type: "DEBIT"
 
-            {
-                _id:toAccount._id
-            },
-
-            {
-                $inc:{
-                    balance:amount
-                }
-            },
-
-            {
+            }], {
                 session
-            }
-
-        );
-
-  
-
-        await ledgerModel.create([{
-
-            account:fromAccount._id,
-            amount,
-            transaction:transaction._id,
-            type:"DEBIT"
-
-        }],{session});
+            });
 
 
+            // 4. Create CREDIT ledger entry
 
-        await ledgerModel.create([{
+            await ledgerModel.create([{
 
-            account:toAccount._id,
-            amount,
-            transaction:transaction._id,
-            type:"CREDIT"
+                account: toAccount._id,
+                amount,
+                transaction: createdTransaction._id,
+                type: "CREDIT"
 
-        }],{session});
+            }], {
+                session
+            });
 
-        transaction.status="COMPLETED";
 
-        await transaction.save({
-            session
+            // 5. Mark transaction as completed
+
+            createdTransaction.status = "COMPLETED";
+
+            await createdTransaction.save({
+                session
+            });
+
         });
 
 
-
-        await session.commitTransaction();
+        // withTransaction() successfully committed
 
         return res.status(201).json({
 
-            message:"Success",
+            message: "Success",
 
-            transaction
+            transaction: createdTransaction
 
         });
 
     }
-    catch(err:any){
+    catch (err: any) {
 
-        await session.abortTransaction();
+        // withTransaction() has already aborted
+        // the transaction if it failed.
 
-        if(transaction){
+        if (transaction) {
 
-            transaction.status="FAILED";
+            transaction.status = "FAILED";
 
             await transaction.save();
+
         }
+
 
         return res.status(500).json({
 
-            message:err.message
+            message: err.message
 
         });
 
     }
-    finally{
+    finally {
 
-        session.endSession();
+        await session.endSession();
 
     }
 
@@ -221,7 +249,7 @@ export async function initialFundsController(
 ) {
 
     const session = await mongoose.startSession();
-    let transaction = null;
+    let transaction: TransactionDocument | null = null;
 
     try {
 

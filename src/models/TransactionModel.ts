@@ -36,4 +36,8 @@ const transactionSchema = new mongoose.Schema({
 })
 
 const transactionModel = mongoose.model("transactions", transactionSchema)
+export type TransactionDocument =
+    mongoose.HydratedDocument<
+        mongoose.InferSchemaType<typeof transactionSchema>
+    >;
 export default transactionModel;
